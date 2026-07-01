@@ -1,0 +1,46 @@
+# ===== Keil MDK-ARM build artifacts =====
+*.o
+*.d
+*.crf
+*.iex
+*.axf
+*.bin
+*.hex
+*.htm
+*.map
+*.lst
+*.lnp
+*.mpf
+*.mpj
+*.obj
+*.omf
+*.plg
+*.rpt
+*.tmp
+*.__i
+*.tra
+*.dep
+*.sct
+*.dbgconf
+*.bak
+*.ddk
+*.edk
+*.LINGZHUNING
+*.Administrator
+JLinkLog.txt
+*.scvd
+
+# Build output folders
+Output/
+Listings/
+DebugConfig/
+RTE/_RTE_*
+
+# Keil per-user GUI / options state (keep .uvprojx; ignore local user state)
+*.uvguix.*
+*.uvoptx
+*.uvopt
+
+# ===== Editors / tools =====
+.vscode/
+.claude/settings.local.json
