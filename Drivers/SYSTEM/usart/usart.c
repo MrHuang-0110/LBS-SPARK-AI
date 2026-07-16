@@ -1,4 +1,4 @@
- 
+﻿ 
 #include "./SYSTEM/sys/sys.h"
 #include "./SYSTEM/usart/usart.h"
 #include "./SYSTEM/delay/delay.h"
@@ -510,7 +510,22 @@ static void HAL_USART_IDLE_INTERRUPT(UART_HandleTypeDef *huart)
 						 }
 						 else
 						 {
-							 set_sensor_parameter(getHubBase(8),(_AGREEMENT*)&frame);
+							 /* 指令帧(0xB6/0xB9/0xBE/0xBA/0x6F/0xC3/0xC4/0xEF)
+							  * 走 busDataparsing()，与 USB CDC 路径保持一致；
+							  * 传感器帧(0xC1 等)仍走 set_sensor_parameter()。 */
+							 switch(frame.index) {
+								 case 0xB6: case 0xB9: case 0xBE: case 0xBA:
+								 case 0x6F: case 0xC3: case 0xC4: case 0xEF:
+								 {
+									 extern void busDataparsing(_AGREEMENT *frame, void (*port_transerf_data)(void *data, uint16_t length));
+									 extern void blue_send_data(char *str, uint16_t len);
+									 busDataparsing(&frame, (void (*)(void *, uint16_t))blue_send_data);
+									 break;
+								 }
+								 default:
+									 set_sensor_parameter(getHubBase(8),(_AGREEMENT*)&frame);
+									 break;
+							 }
 						 }
 					 }
 					 else
