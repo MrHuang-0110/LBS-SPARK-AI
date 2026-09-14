@@ -8,6 +8,97 @@
 #include "./SYSTEM/usart/usart.h"
 #include "./SYSTEM/delay/delay.h"
 #include "exfuns.h"
+
+static volatile uint8_t blue_remote_latest[BLUE_REMOTE_DATA_SIZE];
+
+/* 遥控活跃判定：
+ * 1. 主动进入遥控模式后，直到主动退出前一直暂停蓝牙监控；
+ * 2. 未主动进入时，收到 0xC1 帧也认为对端是遥控器（PC 上位机从不发 0xC1），
+ *    30s 内暂停蓝牙监控，把带宽让给遥控。 */
+#define BLUE_REMOTE_ACTIVE_TIMEOUT_MS 30000U
+static volatile bool blue_remote_session_active;
+static volatile bool blue_remote_seen;
+static volatile uint32_t blue_remote_last_tick;
+
+static void blue_remote_clear_latest(void)
+{
+    memset((void *)blue_remote_latest, 0, sizeof(blue_remote_latest));
+}
+
+bool blue_remote_active(void)
+{
+    if(blue_remote_session_active)
+    {
+        return true;
+    }
+    if(!blue_remote_seen)
+    {
+        return false;
+    }
+    return (uint32_t)(HAL_GetTick() - blue_remote_last_tick) < BLUE_REMOTE_ACTIVE_TIMEOUT_MS;
+}
+
+void blue_remote_session_start(void)
+{
+    blue_remote_session_active = true;
+    blue_remote_seen = false;
+    blue_remote_last_tick = 0;
+    blue_remote_clear_latest();
+}
+
+void blue_remote_session_end(void)
+{
+    blue_remote_session_active = false;
+    blue_remote_seen = false;
+    blue_remote_last_tick = 0;
+    blue_remote_clear_latest();
+}
+
+void blue_update_remote(const uint8_t *data,uint16_t length)
+{
+    uint16_t copy_length;
+
+    if(data == NULL || length == 0U)
+    {
+        return;
+    }
+
+    copy_length = length;
+    if(copy_length > sizeof(blue_remote_latest))
+    {
+        copy_length = sizeof(blue_remote_latest);
+    }
+
+    blue_remote_seen = true;
+    blue_remote_last_tick = HAL_GetTick();
+
+    /* 关中断整块替换：清零/拷贝过程不会被脚本读到，
+     * 否则脚本可能读到"全 0=全部松开"的中间态，边沿检测就会多触发。 */
+    {
+        uint32_t primask = __get_PRIMASK();
+        __disable_irq();
+        memset((void *)blue_remote_latest, 0, sizeof(blue_remote_latest));
+        memcpy((void *)blue_remote_latest, data, copy_length);
+        __set_PRIMASK(primask);
+    }
+}
+
+void blue_read_remote(uint8_t *data)
+{
+    uint32_t primask;
+
+    if(data == NULL)
+    {
+        return;
+    }
+
+    /* 关中断整块快照，保证脚本拿到的一定是某一帧的完整状态，不会撕裂。 */
+    primask = __get_PRIMASK();
+    __disable_irq();
+    memcpy(data, (const void *)blue_remote_latest, sizeof(blue_remote_latest));
+    __set_PRIMASK(primask);
+}
+
 static uint8_t blueScanATcmd(char *atcmd)
 {
 	  uint8_t error_num = 0;
@@ -17,7 +108,7 @@ static uint8_t blueScanATcmd(char *atcmd)
     
 		while(1)
 		{
-			uart_transmit_it(blue->huart,(uint8_t *)atcmd,strlen(atcmd));
+			blue_send_control((const uint8_t *)atcmd,strlen(atcmd));
 		  if(blue->is_resh_flag)
 		 {
 		   blue->is_resh_flag = false;
@@ -72,14 +163,9 @@ void blue_set_off(void)
   blueScanATcmd("AT+ROLE=1\r\n");
 //	set_event_enable("monitor_event");
 }
-void blue_send_data(char *str,uint16_t len)
+void blue_send_data(void *data,uint16_t len)
 { 
-   	  DEV_BLUE *blue = (DEV_BLUE*)getHubBase(PORT_BLUE);
-    	if(blue!=NULL)
-			{
-					/* OTA发送必须确保数据发出，使用阻塞发送等待完成 */
-					HAL_UART_Transmit(blue->huart, (uint8_t *)str, len, 100);
-			}
+    blue_send_control((const uint8_t *)data, len);
 }
 void blue_init(void)
 { 
@@ -129,16 +215,14 @@ void blue_init(void)
 }
 void refsh_blue(void* self, void* data)
 { 
-   DEV_BLUE *mt = (DEV_BLUE*)self;
- 
 	 _AGREEMENT *_fd = (_AGREEMENT *)data;
-	 
-	 switch(_fd->index)
-	 { 
+
+	 (void)self;
+   switch(_fd->index)
+   {
 		 /*remote*/
 	   case 0xC1:
-			  memcpy(mt->remoteValue,_fd->data,10);
-		    extern void usb_printf(char *fmt, ...);
+			  blue_update_remote(_fd->data,BLUE_REMOTE_DATA_SIZE);
 		 break;
 	 }
 }
@@ -161,10 +245,13 @@ DEV_BLUE *create_blue(void)
         },
 			  .huart = getusartHandle(5)
     };
-   blue->is_resh_flag = false;
+	 blue->is_resh_flag = false;
 	 blue->is_off_on = false;
 	 memset(blue->at_cmd_bufer,0,32);
-	 memset(blue->remoteValue,0,16);		
+	 memset((void *)blue_remote_latest,0,sizeof(blue_remote_latest));
+	 blue_remote_session_active = false;
+	 blue_remote_seen = false;
+	 blue_remote_last_tick = 0;
     return blue;
 }
 

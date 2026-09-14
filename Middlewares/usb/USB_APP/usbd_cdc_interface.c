@@ -323,7 +323,8 @@ void usb_event_receive_callback(void *arg) {
 	  while (message->g_user_usb_rx_len--){			 
       if(frame_parser_process_byte(&message->usb_parser, *data++)){
 				_AGREEMENT frame;
-			 if(dataAgreeAnalys(&frame,message->g_user_usb_rx_buffer,message->g_sys_usb_rx_len) == AGREE_MEN_OK)
+			 uint16_t frame_length = message->usb_parser.index;
+			 if(dataAgreeAnalys(&frame,message->usb_parser.buffer,frame_length) == AGREE_MEN_OK)
 			 { 
 					busDataparsing(&frame,cdc_vcp_data_tx);
 			 }
@@ -335,11 +336,15 @@ void usb_event_receive_callback(void *arg) {
 				// { 
 				  //  blue_send_data((char*)message->g_user_usb_rx_buffer,message->g_sys_usb_rx_len);
 				// }
-				  
-			 }			   
+				 }
+			 message->usb_parser.state = STATE_IDLE;
+			 message->usb_parser.index = 0;
+			 message->usb_parser.expected_length = 0;
+			 message->usb_parser.data_bytes_received = 0;
+			 message->usb_parser.calc_checksum = 0;
+			 message->usb_parser.frame_valid = false;
      }
 	 }		 
-		frame_parser_init(&message->usb_parser);
     reset_usb_parser();	   	 
     set_event_disable("usb_receive");
 }

@@ -4,6 +4,7 @@
 
 #include "stdio.h"
 #include "./SYSTEM/sys/sys.h"
+#include "protocol.h"
 
 
 /******************************************************************************************/
@@ -105,7 +106,10 @@ void uart_blue_idle_start(void);
 void uart_port_init(void);
 UART_HandleTypeDef *getusartHandle(uint8_t num);
 void uart_transmit_it(UART_HandleTypeDef *huart,uint8_t *data,uint16_t len);
-void blue_send_it(const uint8_t *data, uint16_t len);   /* 蓝牙非阻塞发送(IT)，忙则丢弃，供中断内监控使用 */
+void blue_send_it(const uint8_t *data, uint16_t len);   /* 蓝牙监控发送，忙时只保留最新包 */
+void blue_send_control(const uint8_t *data, uint16_t len); /* 蓝牙控制/OTA应答发送 */
+void blue_tx_poll(void);
+bool blue_pop_frame(_AGREEMENT *frame);
 #endif
 
 

@@ -180,7 +180,7 @@ extern USBD_HandleTypeDef USBD_Device;
  * 避免 monitor_send_usb 的 DMA 与脚本 print()/usb_printf 异步读写同一缓冲区而互相踩踏。 */
 static char mon_usb_txbuf[USB_USART_REC_LEN + 8];
 
-/* 1ms：USB CDC 监控发送 */
+/* 10ms：USB CDC 监控发送 */
 void monitor_send_usb(void *arg)
 {
     (void)arg;
@@ -193,31 +193,41 @@ void monitor_send_usb(void *arg)
      * 又避免覆盖正在被 DMA 读取的 mon_usb_txbuf。 */
     if (hcdc == NULL || hcdc->TxState != 0U) return;
 
-    /* 临界区：SetTxBuffer+TransmitPacket 必须与 usb_printf/pika_platform_printf 串行，
-     * 否则 CDC 句柄的 tx 指针会被交错设置。线程侧持锁时 PRIMASK 屏蔽本中断。 */
+    /* snprintf 写的是本函数专用的 mon_usb_txbuf，不与 usb_printf/pika_platform_printf
+     * 共享，放在临界区外，避免关中断时间超过 UART5 一个字节(115200 下 87us)导致丢字节。
+     * 临界区只保留 SetTxBuffer+TransmitPacket，与其它 USB 发送串行。 */
+    uint16_t n = (uint16_t)snprintf(mon_usb_txbuf, sizeof(mon_usb_txbuf), "%s\r\n", monitor_get_json());
+
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
-    uint16_t n = (uint16_t)snprintf(mon_usb_txbuf, sizeof(mon_usb_txbuf), "%s\r\n", monitor_get_json());
     cdc_vcp_data_tx(mon_usb_txbuf, n);
     __set_PRIMASK(primask);
 }
 
-/* 25ms：蓝牙(UART5) 监控发送，非阻塞 */
+/* 200ms：蓝牙(UART5) 监控发送，非阻塞 */
 void monitor_send_blue(void *arg)
 {
     (void)arg;
+    blue_tx_poll();
     if (!(start_py || start_pauto))      return;   /* 空闲期交给主循环 */
     if (!blue_monitor_enabled)           return;
     if (returnDownLoadState())           return;   /* OTA 进行中 */
+    if (blue_remote_active())            return;   /* 遥控器活跃：让出蓝牙带宽 */
 
     DEV_BLUE *blue = read_blue((SensorBase *)getHubBase(PORT_BLUE));
     if (blue == NULL || !blue->is_off_on) return;  /* 蓝牙未连接/未开启 */
 
-    /* UART5 忙(上一包 IT 未发完)则丢弃本帧：115200 baud 发一包 JSON 需 30~90ms，
-     * 快于 25ms 周期，由波特率自然节流；同时避免覆盖正在发送的 blue_mon_txbuf。 */
-    if (HAL_UART_GetState(getusartHandle(5)) != HAL_UART_STATE_READY) return;
+    static char blue_mon_txbuf[1024];
+    size_t json_length = strlen(monitor_get_json());
 
-    static char blue_mon_txbuf[512];
-    uint16_t n = (uint16_t)snprintf(blue_mon_txbuf, sizeof(blue_mon_txbuf), "%s\r\n", monitor_get_json());
-    blue_send_it((const uint8_t *)blue_mon_txbuf, n);   /* 内部 READY 检查 + IT 发送，忙则丢弃 */
+    /* 不发送被截断的 JSON，否则上位机只能把整行丢弃。 */
+    if (json_length > sizeof(blue_mon_txbuf) - 3U)
+    {
+        return;
+    }
+
+    memcpy(blue_mon_txbuf, monitor_get_json(), json_length);
+    blue_mon_txbuf[json_length++] = '\r';
+    blue_mon_txbuf[json_length++] = '\n';
+    blue_send_it((const uint8_t *)blue_mon_txbuf, (uint16_t)json_length);
 }

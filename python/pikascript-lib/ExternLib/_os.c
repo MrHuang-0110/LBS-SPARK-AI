@@ -39,8 +39,8 @@ void _os_sleep_s(PikaObj *self, pika_float tick)
 }
 void _os_stop_exit(PikaObj *self)
 { 
-	 extern void __exitpython(void);
-   __exitpython();
+	 extern void exit_python(void);
+   exit_python();
 }
 int _os_get_port_linke(PikaObj *self, int port)
 { 

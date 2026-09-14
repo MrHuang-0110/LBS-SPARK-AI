@@ -4,6 +4,7 @@
 #include "./SYSTEM/delay/delay.h"
 #include "protocol.h"
 #include "deviceIdentify.h"
+#include "blue.h"
 #include "stdarg.h"
 extern void usb_printf(char *fmt, ...);
 static UART_HandleTypeDef g_uart1_handle;  /* UART??? */
@@ -23,11 +24,277 @@ static uint8_t usart2dmaRxBufer[DMA_RX_BUFER_SIZE];
 static uint8_t usart3dmaRxBufer[DMA_RX_BUFER_SIZE];
 static uint8_t usart4dmaRxBufer[DMA_RX_BUFER_SIZE];
 static uint8_t usart5dmaRxBufer[DMA_RX_BUFER_SIZE];
-static uint32_t usart5dmaRxlength;
+static uint16_t usart5dmaRxlength;
+static uint16_t usart5_expected_length;
+static bool usart5_frame_in_progress;
+static uint32_t usart5_last_rx_tick;
 
-static uint8_t usart5RxBufer[RXBUFFERSIZE];
+static uint8_t blueTxBufer[1024];
 
-static uint8_t blueTxBufer[512];
+#define BLE_FRAME_QUEUE_SIZE          8U
+#define BLE_TX_PACKET_SIZE            1024U
+#define BLE_TX_CONTROL_PACKET_SIZE    64U
+#define BLE_TX_CONTROL_QUEUE_SIZE    6U
+#define BLE_RX_GUARD_MS               8U
+#define BLE_FRAME_TIMEOUT_MS         100U
+#define BLE_TX_GUARD_MS               2U
+
+/* 协议帧只在中断中入队，所有业务处理都在主循环完成。 */
+static _AGREEMENT ble_frame_queue[BLE_FRAME_QUEUE_SIZE];
+static volatile uint8_t ble_frame_queue_head;
+static volatile uint8_t ble_frame_queue_tail;
+
+/* UART5 单线时序由一个发送器统一管理：控制/OTA应答优先于监控。 */
+static uint8_t ble_tx_active_buffer[BLE_TX_PACKET_SIZE];
+static uint8_t ble_tx_control_queue[BLE_TX_CONTROL_QUEUE_SIZE][BLE_TX_CONTROL_PACKET_SIZE];
+static uint16_t ble_tx_control_length[BLE_TX_CONTROL_QUEUE_SIZE];
+static volatile uint8_t ble_tx_control_head;
+static volatile uint8_t ble_tx_control_tail;
+static volatile uint8_t ble_tx_control_count;
+static uint8_t ble_tx_monitor_buffer[BLE_TX_PACKET_SIZE];
+static uint16_t ble_tx_monitor_length;
+static volatile bool ble_tx_monitor_pending;
+static volatile bool ble_tx_busy;
+
+/* 收包后留出保护时间，控制/OTA发送仍由独立优先级队列保证。 */
+static volatile uint32_t ble_rx_quiet_until;
+static volatile uint32_t ble_tx_quiet_until;
+
+static bool ble_time_before(uint32_t now, uint32_t deadline)
+ {
+    return (int32_t)(now - deadline) < 0;
+}
+
+static void ble_rx_reset(void);
+
+static void ble_rx_check_timeout(void)
+{
+    if (usart5_frame_in_progress &&
+        (uint32_t)(HAL_GetTick() - usart5_last_rx_tick) >= BLE_FRAME_TIMEOUT_MS)
+    {
+        ble_rx_reset();
+    }
+}
+
+static bool ble_tx_can_start(bool is_monitor)
+{
+    uint32_t now = HAL_GetTick();
+
+    ble_rx_check_timeout();
+
+    if (usart5_frame_in_progress || ble_time_before(now, ble_rx_quiet_until) ||
+        ble_time_before(now, ble_tx_quiet_until))
+    {
+        return false;
+    }
+
+    (void)is_monitor;
+    return true;
+}
+
+static void ble_queue_frame_from_isr(const _AGREEMENT *frame)
+{
+    uint8_t next_head;
+
+    next_head = (uint8_t)((ble_frame_queue_head + 1U) % BLE_FRAME_QUEUE_SIZE);
+    if (next_head == ble_frame_queue_tail)
+    {
+        /* 保留旧帧，丢弃新帧；发送端不会收到 ACK 后会重试该帧。 */
+        return;
+    }
+
+    memcpy(&ble_frame_queue[ble_frame_queue_head], frame, sizeof(_AGREEMENT));
+    __DMB();
+    ble_frame_queue_head = next_head;
+}
+
+static void ble_note_valid_frame(const _AGREEMENT *frame)
+{
+    uint32_t now = HAL_GetTick();
+
+    ble_rx_quiet_until = now + BLE_RX_GUARD_MS;
+
+    if (frame->index == 0xC1)
+    {
+        /* 遥控脚本可能正在阻塞主循环，只做固定长度的无分配快照。 */
+        /* C1 is a fixed ten-byte remote record; unused bytes are zero-filled
+           by dataAgreeAnalys(), preserving the legacy protocol behavior. */
+        blue_update_remote(frame->data, BLUE_REMOTE_DATA_SIZE);
+        return;
+    }
+
+    ble_queue_frame_from_isr(frame);
+}
+
+static void ble_tx_try_start(void)
+{
+    uint16_t length = 0;
+    bool from_control = false;
+
+    /* HAL 已经完成发送但回调未推进队列时，允许下一次轮询自恢复。 */
+    if (ble_tx_busy && HAL_UART_GetState(&g_uart5_handle) == HAL_UART_STATE_READY)
+    {
+        ble_tx_busy = false;
+    }
+
+    if (ble_tx_busy || HAL_UART_GetState(&g_uart5_handle) != HAL_UART_STATE_READY)
+    {
+        return;
+    }
+
+    if (ble_tx_control_count > 0U && ble_tx_can_start(false))
+    {
+        memcpy(ble_tx_active_buffer,
+               ble_tx_control_queue[ble_tx_control_tail],
+               ble_tx_control_length[ble_tx_control_tail]);
+        length = ble_tx_control_length[ble_tx_control_tail];
+        ble_tx_control_tail = (uint8_t)((ble_tx_control_tail + 1U) % BLE_TX_CONTROL_QUEUE_SIZE);
+        ble_tx_control_count--;
+        from_control = true;
+    }
+    else if (ble_tx_monitor_pending && ble_tx_can_start(true))
+    {
+        memcpy(ble_tx_active_buffer, ble_tx_monitor_buffer, ble_tx_monitor_length);
+        length = ble_tx_monitor_length;
+        ble_tx_monitor_pending = false;
+    }
+
+    if (length == 0U)
+    {
+        return;
+    }
+
+    if (HAL_UART_Transmit_IT(&g_uart5_handle, ble_tx_active_buffer, length) != HAL_OK)
+    {
+        /* 句柄状态被其他路径占用时，把包放回待发送位置。 */
+        if (from_control)
+        {
+            ble_tx_control_tail = (uint8_t)((ble_tx_control_tail + BLE_TX_CONTROL_QUEUE_SIZE - 1U) %
+                                             BLE_TX_CONTROL_QUEUE_SIZE);
+            memcpy(ble_tx_control_queue[ble_tx_control_tail], ble_tx_active_buffer, length);
+            ble_tx_control_length[ble_tx_control_tail] = length;
+            ble_tx_control_count++;
+        }
+        else
+        {
+            memcpy(ble_tx_monitor_buffer, ble_tx_active_buffer, length);
+            ble_tx_monitor_length = length;
+            ble_tx_monitor_pending = true;
+        }
+        return;
+    }
+
+    ble_tx_busy = true;
+}
+
+void blue_tx_poll(void)
+{
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    ble_tx_try_start();
+    __set_PRIMASK(primask);
+}
+
+void blue_send_control(const uint8_t *data, uint16_t len)
+{
+    uint32_t primask;
+    uint8_t head;
+
+    if (data == NULL || len == 0U)
+    {
+        return;
+    }
+    if (len > BLE_TX_CONTROL_PACKET_SIZE)
+    {
+        return;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (ble_tx_control_count >= BLE_TX_CONTROL_QUEUE_SIZE)
+    {
+        /* 不丢旧 ACK，调用方会因没有响应而重试控制/OTA帧。 */
+        __set_PRIMASK(primask);
+        return;
+    }
+
+    head = ble_tx_control_head;
+    memcpy(ble_tx_control_queue[head], data, len);
+    ble_tx_control_length[head] = len;
+    ble_tx_control_head = (uint8_t)((head + 1U) % BLE_TX_CONTROL_QUEUE_SIZE);
+    ble_tx_control_count++;
+    ble_tx_try_start();
+
+    __set_PRIMASK(primask);
+}
+
+void blue_send_it(const uint8_t *data, uint16_t len)
+{
+    uint32_t primask;
+
+    if (data == NULL || len == 0U)
+    {
+        return;
+    }
+    if (len > BLE_TX_PACKET_SIZE)
+    {
+        len = BLE_TX_PACKET_SIZE;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+
+    /* 始终保留最新监控包；接收保护窗口只延迟发送，不丢弃状态。 */
+    memcpy(ble_tx_monitor_buffer, data, len);
+    ble_tx_monitor_length = len;
+    ble_tx_monitor_pending = true;
+    ble_tx_try_start();
+
+    __set_PRIMASK(primask);
+}
+
+bool blue_pop_frame(_AGREEMENT *frame)
+{
+    uint32_t primask;
+    bool has_frame = false;
+
+    if (frame == NULL)
+    {
+        return false;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    if (ble_frame_queue_tail != ble_frame_queue_head)
+    {
+        memcpy(frame, &ble_frame_queue[ble_frame_queue_tail], sizeof(_AGREEMENT));
+        ble_frame_queue_tail = (uint8_t)((ble_frame_queue_tail + 1U) % BLE_FRAME_QUEUE_SIZE);
+        has_frame = true;
+    }
+    __set_PRIMASK(primask);
+
+    return has_frame;
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    uint32_t primask;
+
+    if (huart->Instance != USART5_UX)
+    {
+        return;
+    }
+
+    ble_tx_busy = false;
+    ble_tx_quiet_until = HAL_GetTick() + BLE_TX_GUARD_MS;
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    ble_tx_try_start();
+    __set_PRIMASK(primask);
+}
 
 UART_HandleTypeDef *getusartHandle(uint8_t num)
 { 
@@ -101,16 +368,36 @@ int fputc(int ch, FILE *f)
     return ch;
 }
 void blue_printf(const char *format, ...)
-{ 
+{
 	va_list args;					// va_list?????,???????????
-  uint32_t length;				// ????????
+  int length;						// ????????
+  uint32_t start_tick;
 
 
   va_start(args, format);
-	length = vsnprintf((char *)blueTxBufer, 512, (char *)format, args);
+	length = vsnprintf((char *)blueTxBufer, sizeof(blueTxBufer), (char *)format, args);
   va_end(args);
- //	uart_transmit_it(&g_uart5_handle,blueTxBufer,length);
-	HAL_UART_Transmit(&g_uart5_handle, blueTxBufer, length,1000);		
+	if (length <= 0)
+	{
+		return;
+	}
+	if (length >= (int)sizeof(blueTxBufer))
+	{
+		length = sizeof(blueTxBufer) - 1;
+	}
+
+	/* 主循环中的监控发送恢复为可靠的阻塞发送；脚本运行期间由
+	 * monitor_send_blue() 使用 IT 队列，不会在中断里进入这里。 */
+	start_tick = HAL_GetTick();
+	while (HAL_UART_GetState(&g_uart5_handle) != HAL_UART_STATE_READY)
+	{
+		blue_tx_poll();
+		if ((HAL_GetTick() - start_tick) >= 1000U)
+		{
+			return;
+		}
+	}
+	HAL_UART_Transmit(&g_uart5_handle, blueTxBufer, (uint16_t)length, 1000U);
 }
 #endif
 
@@ -123,16 +410,6 @@ void uart_transmit_it(UART_HandleTypeDef *huart,uint8_t *data,uint16_t len)
 		}
 }
 
-/*
- * 蓝牙(UART5)非阻塞发送：供 btim 中断里的监控发送使用。
- * blue_printf 用 HAL_UART_Transmit 阻塞轮询(最多1s)，绝不能在定时器中断里调用，
- * 否则锁死系统。这里改用 IT 方式：UART5 忙则直接丢弃本包(不等待、不阻塞)，
- * 由 115200 波特率自然节流。
- */
-void blue_send_it(const uint8_t *data, uint16_t len)
-{
-	uart_transmit_it(&g_uart5_handle, (uint8_t *)data, len);
-}
 /******************************************************************************************/
 
  
@@ -397,20 +674,149 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
     }
 }
  
+static void ble_rx_reset(void)
+{
+    usart5dmaRxlength = 0U;
+    usart5_expected_length = 0U;
+    usart5_frame_in_progress = false;
+    usart5_last_rx_tick = 0U;
+}
+
+static void ble_rx_push_byte(uint8_t byte)
+{
+    uint16_t frame_length;
+
+    ble_rx_check_timeout();
+    usart5_last_rx_tick = HAL_GetTick();
+
+    ble_rx_quiet_until = HAL_GetTick() + BLE_RX_GUARD_MS;
+
+    if (!usart5_frame_in_progress)
+    {
+        if (byte != FRAME_HEADER)
+        {
+            if (usart5dmaRxlength < sizeof(usart5dmaRxBufer))
+            {
+                usart5dmaRxBufer[usart5dmaRxlength++] = byte;
+            }
+            else
+            {
+                ble_rx_reset();
+            }
+            return;
+        }
+
+        /* 发现帧头时丢弃前面的 AT 文本，按协议帧重新开始。 */
+        usart5dmaRxlength = 0U;
+        usart5_expected_length = 0U;
+        usart5_frame_in_progress = true;
+    }
+
+    if (usart5dmaRxlength >= sizeof(usart5dmaRxBufer))
+    {
+        ble_rx_reset();
+        return;
+    }
+
+    usart5dmaRxBufer[usart5dmaRxlength++] = byte;
+
+    /* 收到第 4 字节(length)时算一次整帧长度，之后不再重复计算 */
+    if (usart5_expected_length == 0U)
+    {
+        if (usart5dmaRxlength < 4U)
+        {
+            return;
+        }
+
+        frame_length = (uint16_t)usart5dmaRxBufer[3] + 7U;
+        if (frame_length < MIN_FRAME_SIZE || frame_length > sizeof(usart5dmaRxBufer))
+        {
+            ble_rx_reset();
+            return;
+        }
+        usart5_expected_length = frame_length;
+    }
+
+    /* 按 length 收完整帧，不依赖帧内字节间的空闲时间。 */
+    if (usart5dmaRxlength == usart5_expected_length)
+    {
+        _AGREEMENT frame;
+
+        if (dataAgreeAnalys(&frame, usart5dmaRxBufer, usart5_expected_length) == AGREE_MEN_OK)
+        {
+            ble_note_valid_frame(&frame);
+        }
+        ble_rx_reset();
+    }
+}
+
+static void ble_report_at_response(void)
+{
+    DEV_BLUE *blue;
+    uint16_t copy_length;
+
+    if (usart5dmaRxlength == 0U)
+    {
+        return;
+    }
+
+    if (usart5_frame_in_progress)
+    {
+        /* 兼容"length 字段为整帧长度"的发送端：这类帧按 data[3]+7 永远等不满，
+         * 在 IDLE 时用当前缓冲再尝试解析一次；解析成功才消费，否则继续等后续字节。 */
+        _AGREEMENT frame;
+
+        if (dataAgreeAnalys(&frame, usart5dmaRxBufer, usart5dmaRxlength) == AGREE_MEN_OK)
+        {
+            ble_note_valid_frame(&frame);
+            ble_rx_reset();
+        }
+        return;
+    }
+
+    blue = (DEV_BLUE *)getHubBase(PORT_BLUE);
+    if (blue != NULL)
+    {
+        copy_length = usart5dmaRxlength;
+        if (copy_length >= sizeof(blue->at_cmd_bufer))
+        {
+            copy_length = sizeof(blue->at_cmd_bufer) - 1U;
+        }
+        memset(blue->at_cmd_bufer, 0, sizeof(blue->at_cmd_bufer));
+        memcpy(blue->at_cmd_bufer, usart5dmaRxBufer, copy_length);
+        blue->at_cmd_bufer[copy_length] = '\0';
+        blue->is_resh_flag = true;
+    }
+    ble_rx_reset();
+}
+
 static void HAL_USART_IDLE_INTERRUPT(UART_HandleTypeDef *huart)
 {
-	  if(__HAL_UART_GET_FLAG(huart, UART_FLAG_RXNE) != RESET)
+	  if(huart->Instance == USART5_UX)
 		{
-			  __HAL_UART_CLEAR_FLAG(huart, UART_FLAG_RXNE);
-			  if(usart5dmaRxlength >= DMA_RX_BUFER_SIZE)
-				{ 
-				   usart5dmaRxlength = 0;
-					 memset(usart5dmaRxBufer,0,sizeof(usart5dmaRxBufer));			 
-				}
-				else
-				{ 
-				   usart5dmaRxBufer[usart5dmaRxlength++] = huart->Instance->DR & 0xFF;
-				}	 
+        uint32_t status = huart->Instance->SR;
+
+        if ((status & USART_SR_RXNE) != RESET)
+        {
+            ble_rx_push_byte((uint8_t)(huart->Instance->DR & 0xFFU));
+        }
+
+        if ((status & USART_SR_IDLE) != RESET)
+        {
+            /* Read SR then DR to clear IDLE, but feed a byte seen during the clear. */
+            uint32_t clear_status = huart->Instance->SR;
+            uint8_t clear_data = (uint8_t)(huart->Instance->DR & 0xFFU);
+            if ((clear_status & USART_SR_RXNE) != RESET)
+            {
+                ble_rx_push_byte(clear_data);
+            }
+            while (__HAL_UART_GET_FLAG(huart, UART_FLAG_RXNE) != RESET)
+            {
+                ble_rx_push_byte((uint8_t)(huart->Instance->DR & 0xFFU));
+            }
+            ble_report_at_response();
+        }
+        return;
 		}
 	  if(__HAL_UART_GET_FLAG(huart, UART_FLAG_IDLE) != RESET)
 		{ 
@@ -492,56 +898,6 @@ static void HAL_USART_IDLE_INTERRUPT(UART_HandleTypeDef *huart)
 					 memset(usart4dmaRxBufer,0,sizeof(usart4dmaRxBufer));
 					 HAL_UART_Receive_DMA(huart,usart4dmaRxBufer,DMA_RX_BUFER_SIZE);
 			 }
-			 if(huart->Instance == USART5_UX)
-			 {
-				   if(dataAgreeAnalys(&frame,usart5dmaRxBufer,usart5dmaRxlength))
-					 { 
-						 /* ??????????????????? */
-						 if(frame.index == 0xDA || frame.index == 0xAA || frame.index == 0xBB || frame.index == 0xBC)
-						 {
-							 extern volatile bool ble_ota_pending;
-							 extern _AGREEMENT ble_ota_frame;
-							 extern void (*ble_ota_callback)(void *data, uint16_t length);
-							 extern void blue_send_data(char *str, uint16_t len);
-							 memset((_AGREEMENT*)&ble_ota_frame,0,sizeof(_AGREEMENT));
-							 memcpy((_AGREEMENT*)&ble_ota_frame,&frame,sizeof(_AGREEMENT));
-							 ble_ota_callback = (void (*)(void *, uint16_t))blue_send_data;
-							 ble_ota_pending = true;
-						 }
-						 else
-						 {
-							 /* 指令帧(0xB6/0xB9/0xBE/0xBA/0x6F/0xC3/0xC4/0xEF)
-							  * 走 busDataparsing()，与 USB CDC 路径保持一致；
-							  * 传感器帧(0xC1 等)仍走 set_sensor_parameter()。 */
-							 switch(frame.index) {
-								 case 0xB6: case 0xB9: case 0xBE: case 0xBA:
-								 case 0x6F: case 0xC3: case 0xC4: case 0xEF:
-								 {
-									 extern void busDataparsing(_AGREEMENT *frame, void (*port_transerf_data)(void *data, uint16_t length));
-									 extern void blue_send_data(char *str, uint16_t len);
-									 busDataparsing(&frame, (void (*)(void *, uint16_t))blue_send_data);
-									 break;
-								 }
-								 default:
-									 set_sensor_parameter(getHubBase(8),(_AGREEMENT*)&frame);
-									 break;
-							 }
-						 }
-					 }
-					 else
-					 { 
-					   #include "blue.h"
-						 DEV_BLUE *blue = (DEV_BLUE*)getHubBase(8);
-						 memset(blue->at_cmd_bufer,0,32);
-						 memcpy(blue->at_cmd_bufer,usart5dmaRxBufer,usart5dmaRxlength);
-						 blue->is_resh_flag = true;
-					 }				 
-					 usart5dmaRxlength = 0;
-					 memset(usart5dmaRxBufer,0,DMA_RX_BUFER_SIZE);
-					 volatile uint32_t tmp = huart->Instance->SR;
-					 tmp = huart->Instance->DR;
-					(void)tmp;				
-			 }
 		}
 		
 }
@@ -590,8 +946,16 @@ static void ClearUARTErrors(UART_HandleTypeDef *huart)
 	}
 	else if(huart->Instance == USART5_UX)
 	{
-		 ClearUARTErrors(&g_uart5_handle);
-		 HAL_UART_Receive_IT(&g_uart5_handle,usart5RxBufer, RXBUFFERSIZE); 	
+           ClearUARTErrors(&g_uart5_handle);
+           /* UART5 使用自定义 RXNE 收包，不要再启动 HAL 的单字节接收状态机。 */
+           ble_rx_reset();
+           ble_rx_quiet_until = HAL_GetTick() + BLE_RX_GUARD_MS;
+		 g_uart5_handle.gState = HAL_UART_STATE_READY;
+		 ble_tx_busy = false;
+		 __HAL_UART_DISABLE_IT(&g_uart5_handle, UART_IT_TXE);
+		 __HAL_UART_DISABLE_IT(&g_uart5_handle, UART_IT_TC);
+		 __HAL_UART_ENABLE_IT(&g_uart5_handle, UART_IT_IDLE);
+		 __HAL_UART_ENABLE_IT(&g_uart5_handle, UART_IT_RXNE);
 	}
 }
 void USART1_UX_IRQHandler(void)
@@ -617,7 +981,14 @@ void USART4_UX_IRQHandler(void)
 void USART5_UX_IRQHandler(void)
 {
 	  HAL_USART_IDLE_INTERRUPT(&g_uart5_handle);
-    HAL_UART_IRQHandler(&g_uart5_handle);   
+    /* UART5 RXNE is consumed by HAL_USART_IDLE_INTERRUPT().  Let HAL handle
+       this IRQ only while its TX state machine owns the peripheral. */
+    if (g_uart5_handle.gState == HAL_UART_STATE_BUSY_TX ||
+        (g_uart5_handle.Instance->SR &
+         (USART_SR_PE | USART_SR_FE | USART_SR_ORE | USART_SR_NE)) != 0U)
+    {
+        HAL_UART_IRQHandler(&g_uart5_handle);
+    }
 }
 void uart_port_init(void)
 { 

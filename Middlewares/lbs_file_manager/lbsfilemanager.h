@@ -5,7 +5,7 @@
 void run_python(const char *name);
  bool returnDownLoadState(void);
 void refreshFwlibInfo(void);
-void __exitpython(void);
+void exit_python(void);
 void touchFileOKCallBack(void);
 void touchFileErrorCallBack(void);
 int8_t addUIteam(char *UIiteam_name);

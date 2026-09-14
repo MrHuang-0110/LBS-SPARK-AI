@@ -15,7 +15,6 @@
 #include "matrix_port.h"
 #include "exfuns.h"
 #include "malloc.h"
-static bool is_file = false;
 extern void usb_printf(char* fmt,...); 
 volatile bool is_refresh_matrix = false;
 void touchFileOKCallBack(void)
@@ -65,9 +64,10 @@ void run_python(const char *name)
 			extern volatile bool start_pauto;
 		  extern void pauto_play(void);
 			start_pauto = true;
-		  set_event_enable("monitor_event");
-		  display_clear();	
+			set_event_enable("monitor_event");
+			display_clear();
 			pauto_play();
+			set_event_disable("monitor_event");
 		  extern void cloase_all_motor(void);
 	    cloase_all_motor();
 			return;
@@ -80,17 +80,18 @@ void run_python(const char *name)
 					 if(code!=NULL)
 					 { 				   
 							memset(code,0,fileSize);
-							if(fatfs_read_file((char*)name,(uint8_t*)code,fileSize) == FR_OK)
-							{
-								 set_event_enable("monitor_event");
+							 if(fatfs_read_file((char*)name,(uint8_t*)code,fileSize) == FR_OK)
+							 {
+									 set_event_enable("monitor_event");
 								loader_remote_cfg();
 								matrix_port_init();  
 								display_clear();	 
 								pid_line_follow_reset();
 			
-								PikaObj* pikaMain = newRootObj("pikaMain", New_PikaMain);
-								pikaVM_runByteCodeInconstant(pikaMain, (uint8_t*)code);
-								obj_deinit(pikaMain);  
+									 PikaObj* pikaMain = newRootObj("pikaMain", New_PikaMain);
+									 pikaVM_runByteCodeInconstant(pikaMain, (uint8_t*)code);
+									 set_event_disable("monitor_event");
+									 obj_deinit(pikaMain);
 
 								extern void cloase_all_motor(void);
 								cloase_all_motor();
@@ -102,16 +103,15 @@ void run_python(const char *name)
 					 }
 			}	
  
-  _EXIT:
 		myfree(SRAMIN,code);
 }
-void __exitpython(void){
+void exit_python(void){
   pks_vm_exit();
 }
 
 bool returnDownLoadState(void)
 { 
-  return is_file;
+  return exfuns_file_transfer_active();
 }
 
 void refreshFwlibInfo(void)

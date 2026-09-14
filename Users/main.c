@@ -20,6 +20,19 @@ uint32_t fatfs_free = 0;
 volatile bool usb_monitor_enabled = true;
 volatile bool blue_monitor_enabled = true;
 
+#define REMOTE_MODE_ENTER_CMD     0xC2U
+#define REMOTE_MODE_EXIT_CMD      0xC0U
+#define REMOTE_MODE_UI_ID         11U
+#define REMOTE_MODE_SCRIPT_NAME   "remote.o"
+
+static volatile bool remote_enter_pending = false;
+static volatile bool remote_mode_active = false;
+
+static void ble_event_receive_callback(void *arg);
+static bool remote_mode_process_pending(void);
+static void remote_mode_request_enter(void);
+static void remote_mode_request_exit(void);
+
 static EVENT_MANAGER event_t[] = {
  {"led3_event",500,led3_event_callback,NULL},
  {"iwdg_feedevent",10,iwdg_feed,NULL},
@@ -32,8 +45,11 @@ static EVENT_MANAGER event_t[] = {
  {"monitor_event",10,monitor_call_back,NULL},
  /* 脚本运行(主循环阻塞)时由中断接管监控发送，避免 USB/蓝牙断流。
     仅在 start_py||start_pauto 时实际发送(见 monitor.c)，空闲期仍走主循环。 */
- {"usb_monitor_send",1, monitor_send_usb,NULL},
- {"blue_monitor_send",50, monitor_send_blue,NULL}
+ {"usb_monitor_send",10, monitor_send_usb,NULL},
+ {"blue_monitor_send",200, monitor_send_blue,NULL},
+ /* 蓝牙接收事件：与 usb_receive 对等，在 1ms 中断事件里派发协议帧，
+    主循环被脚本阻塞时命令仍能执行（USB/蓝牙行为一致）。 */
+ {"ble_receive",1, ble_event_receive_callback,NULL}
 };
 
 
@@ -263,11 +279,6 @@ void pauto_play(void)
 
 OTA_PY_FILE usbOTAhandle;
 
-/* 蓝牙OTA下载缓冲区：中断中缓存数据，主循环中处理 */
-volatile bool ble_ota_pending = false;
-_AGREEMENT ble_ota_frame;
-void (*ble_ota_callback)(void *data, uint16_t length) = NULL;
-
 static uint8_t check_swd_config(void)
 {
     uint32_t mapr_value = AFIO->MAPR;
@@ -288,10 +299,123 @@ static void disable_jtag_enable_swd(void)
         while(1);
     }
 }
+
+static void remote_mode_stop_running(void)
+{
+	 extern volatile bool start_py;
+	 extern volatile bool start_pauto;
+
+	 if(start_py)
+	 {
+		 exit_python();
+	 }
+	 start_py = false;
+	 set_entery_short(0);
+	 start_pauto = false;
+}
+
+static void remote_mode_open_blue_if_needed(void)
+{
+	 DEV_BLUE *blue = read_blue((SensorBase *)getHubBase(PORT_BLUE));
+
+	 if(blue == NULL)
+	 {
+		 return;
+	 }
+
+	 if(!blue->is_off_on)
+	 {
+		 blue->is_off_on = true;
+		 blue_set_on();
+		 blue->cfg.on_off = 1;
+		 if(fatfs_create_file("blue_cfg.cfg",(BLUE_CFG*)&blue->cfg,sizeof(BLUE_CFG))!=FR_OK)
+		 {
+			 usb_printf("->cfg write error\r\n");
+		 }
+	 }
+}
+
+static void remote_mode_request_enter(void)
+{
+	 extern volatile bool start_py;
+	 extern volatile bool start_pauto;
+
+	 if(remote_mode_active)
+	 {
+		 return;
+	 }
+
+	 remote_enter_pending = true;
+	 if(start_py || start_pauto)
+	 {
+		 remote_mode_stop_running();
+	 }
+}
+
+static void remote_mode_request_exit(void)
+{
+	 remote_enter_pending = false;
+	 if(remote_mode_active)
+	 {
+		 remote_mode_stop_running();
+		 remote_mode_active = false;
+	 }
+	 blue_remote_session_end();
+}
+
+static bool remote_mode_process_pending(void)
+{
+	 extern volatile bool start_py;
+	 extern volatile bool start_pauto;
+
+	 if(!remote_enter_pending || remote_mode_active)
+	 {
+		 return false;
+	 }
+	 if(start_py || start_pauto)
+	 {
+		 remote_mode_stop_running();
+		 return false;
+	 }
+	 if(exfuns_file_transfer_active() || usbOTAhandle.is_refresh_data)
+	 {
+		 return false;
+	 }
+
+	 remote_enter_pending = false;
+	 remote_mode_active = true;
+	 blue_remote_session_start();
+	 remote_mode_open_blue_if_needed();
+	 if(!remote_mode_active)
+	 {
+		 blue_remote_session_end();
+		 return true;
+	 }
+	 ui_manager_set_current_by_id(REMOTE_MODE_UI_ID);
+	 start_py = true;
+	 if(!remote_mode_active)
+	 {
+		 start_py = false;
+		 blue_remote_session_end();
+		 return true;
+	 }
+	 run_python(REMOTE_MODE_SCRIPT_NAME);
+	 start_py = false;
+	 remote_mode_active = false;
+	 blue_remote_session_end();
+	 ui_manager_refresh_current();
+	 return true;
+}
  
 static void Main_Loop_Process(void)
 {
 	extern volatile bool start_py;
+
+	 if(remote_mode_process_pending())
+	 {
+		 return;
+	 }
+
      if (Key_Check_Short_Press())
     {
         beep_play_ui_transition();
@@ -332,9 +456,28 @@ static void Main_Loop_Process(void)
             animation_update();
             HAL_Delay(10); // 短暂延时
            }
+					 bool is_remote_item = (strcmp(item->name,REMOTE_MODE_SCRIPT_NAME) == 0);
+				    start_py = true;
+					 if(is_remote_item)
+					 {
+						 remote_mode_active = true;
+						 blue_remote_session_start();
+						 if(!remote_mode_active)
+						 {
+							 start_py = false;
+							 blue_remote_session_end();
+							 ui_manager_refresh_current();
+							 return;
+						 }
+					 }
 				    run_python(item->name);
-						start_py = false;
-						ui_manager_refresh_current();	  
+					 start_py = false;
+					 if(is_remote_item)
+					 {
+						 remote_mode_active = false;
+						 blue_remote_session_end();
+					 }
+					 ui_manager_refresh_current();	  
 				 }
 				}       		   		   			
     }
@@ -373,6 +516,14 @@ void busDataparsing(_AGREEMENT *frame,void (*port_transerf_data)(void *data,uint
 		   f_unlink("updata.txt");
 			 is_iwdg = true;
 		 break;
+		 case REMOTE_MODE_EXIT_CMD:
+			 /* 0xC0=退出遥控模式：只停止主动/手动进入的 remote.o，避免误停普通脚本。 */
+			 remote_mode_request_exit();
+		 break;
+		 case REMOTE_MODE_ENTER_CMD:
+			 /* 0xC2=进入遥控模式：主循环中打开蓝牙并运行 remote.o。 */
+			 remote_mode_request_enter();
+		 break;
 		 case 0xC3:		  
 		//	fm_print_simple_usage();
 		 break;
@@ -380,11 +531,22 @@ void busDataparsing(_AGREEMENT *frame,void (*port_transerf_data)(void *data,uint
 			 
 		 break;
 		 case 0xB6:
+			 /* 0xB6=运行：运行当前选中脚本，幂等，重复下发不会重启。USB/蓝牙语义一致。 */
+			 if(!start_py && !start_pauto)
+			 {start_py = true;set_entery_short(1);}
+		 break;
 		 case 0xB9:
-			if(start_py)
-			{__exitpython();start_pauto = false;}
-			else
-			{start_py = true;set_entery_short(1);} 
+			 /* 0xB9=停止：停止脚本/Pauto，幂等。USB/蓝牙语义一致。
+			    立即清 start_py，保证同一批事件里紧跟的 0xB6 能重新启动；
+			    同时结束遥控会话，恢复蓝牙监控。 */
+			 if(start_py)
+			 {exit_python();}
+			 start_py = false;
+			 set_entery_short(0);
+			 start_pauto = false;
+			 remote_enter_pending = false;
+			 remote_mode_active = false;
+			 blue_remote_session_end();
 		 break;
 		 case 0xEF:	  
      break;
@@ -413,6 +575,21 @@ void busDataparsing(_AGREEMENT *frame,void (*port_transerf_data)(void *data,uint
 			//	touchFile(frame->index,frame->data,frame->length,port_transerf_data);
 		 break;
 	 }
+}
+
+/* 蓝牙接收事件：与 USB 的 usb_event_receive_callback 对等。
+ * 协议帧在 USART5 中断里入队（遥控 0xC1 例外，已在中断内快照），
+ * 这里在 btim 1ms 事件中统一走 busDataparsing()，
+ * 因此脚本阻塞主循环时 BLE 命令（0xB6/0xB9/...）仍能执行，行为与 USB 一致。 */
+static void ble_event_receive_callback(void *arg)
+{
+    _AGREEMENT frame;
+
+    (void)arg;
+    while(blue_pop_frame(&frame))
+    {
+        busDataparsing(&frame, blue_send_data);
+    }
 }
  
 static void systemInit(void)
@@ -457,6 +634,7 @@ int main(void)
     sys_nvic_set_vector_table(FLASH_BASE,0x10000);   
     systemInit();	
     while(1){
+			blue_tx_poll();
 			ui_manager_update();
       Main_Loop_Process();			
 			if(usbOTAhandle.is_refresh_data)
@@ -484,49 +662,29 @@ int main(void)
 					blue_monitor_enabled = true;
 				}
 			}
-			/* 处理蓝牙OTA下载（通过中断缓存 + 主循环处理） */
-			if(ble_ota_pending)
-			{ 
-				if(ble_ota_callback != NULL)
-				{
-					/* OTA下载开始前关闭监控 */
-					if(ble_ota_frame.index == 0xDA)
-					{
-						usb_monitor_enabled = false;
-						blue_monitor_enabled = false;
-					}
-					touchOtherFile(ble_ota_frame.index,
-								   ble_ota_frame.data,
-								   ble_ota_frame.length,
-								   ble_ota_callback);
-				}
-				ble_ota_pending = false;
-				/* OTA下载完成帧或错误后恢复监控 */
-				if(ble_ota_frame.index == 0xBB || ble_ota_frame.index == 0xBC)
-				{
-					usb_monitor_enabled = true;
-					blue_monitor_enabled = true;
-				}
-			}
+		 blue_tx_poll();
      check_battery_with_debounce();
+		 /* 每轮只重建一次 JSON，USB/蓝牙共用 */
+		 if(usb_monitor_enabled || (blue_monitor_enabled && !blue_remote_active()))
+		 {
+			 monitor_call_back(NULL);
+		 }
 		 /* USB监控 */
 		 if(usb_monitor_enabled)
 		 {
-			 monitor_call_back(NULL);
 			 usb_printf("%s\r\n", monitor_get_json());
 		 }
-		 /* 蓝牙监控发送：25ms周期，非阻塞，仅蓝牙连接时发送 */
-		 if(blue_monitor_enabled)
+		 /* 蓝牙监控发送：200ms周期，非阻塞，仅蓝牙连接时发送；
+		    遥控器活跃(收到0xC1)期间暂停，优先保证遥控实时性 */
+		 if(blue_monitor_enabled && !blue_remote_active())
 		 {
-			 static uint32_t blue_monitor_tick = 0;
+			 static uint32_t blue_monitor_last_tick = 0;
 			 DEV_BLUE *blue = read_blue((SensorBase *)getHubBase(PORT_BLUE));
 			 if(blue != NULL && blue->is_off_on)
 			 {
-				 blue_monitor_tick += 5;
-				 if(blue_monitor_tick >= 25)
+				 if((HAL_GetTick() - blue_monitor_last_tick) >= 200U)
 				 {
-					 blue_monitor_tick = 0;
-					 monitor_call_back(NULL);
+					 blue_monitor_last_tick = HAL_GetTick();
 					 blue_printf("%s\r\n", monitor_get_json());
 				 }
 			 }

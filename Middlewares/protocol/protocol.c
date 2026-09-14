@@ -12,35 +12,43 @@ static uint8_t calculate_checksum(const uint8_t *data, size_t length) {
 
 uint8_t dataAgreeAnalys(_AGREEMENT *_agreement_,uint8_t *data,uint16_t length)
 { 
-  if(data[0] != 0x5A || data[length - 1] != 0xA5)
-   	  return AGREE_MEN_ERROR;
+  if(_agreement_ == NULL || data == NULL || length < MIN_FRAME_SIZE)
+    return AGREE_MEN_ERROR;
 
-   if(length <8)
-		  return AGREE_MEN_ERROR;
+  if(data[0] != FRAME_HEADER || data[length - 1] != FRAME_FOOTER)
+    return AGREE_MEN_ERROR;
 
-	 static uint8_t _mycrc_;
-   _mycrc_ = calculate_checksum((const uint8_t *)data,length - 2);
+  /* length å­—æ®µå…¼å®¹ä¸¤ç§åŽ†å²çº¦å®šï¼š
+   * - payload é•¿åº¦ï¼šæ•´å¸§ = data[3] + 7ï¼ˆæœ¬ä»“åº“ä¸Šä½æœº/ä¼ æ„Ÿå™¨èŠ‚ç‚¹ï¼‰
+   * - æ•´å¸§é•¿åº¦ï¼š  æ•´å¸§ = data[3]ï¼ˆéƒ¨åˆ†æ—§å‘é€ç«¯ï¼Œå¦‚é¥æŽ§ Appï¼‰
+   * CRC ä»ä¼šæ ¡éªŒï¼Œä¸ä¼šå› æ­¤æ”¾æ¾æ•°æ®æ­£ç¡®æ€§ã€‚ */
+  if((uint16_t)data[3] + 7U != length && (uint16_t)data[3] != length)
+    return AGREE_MEN_ERROR;
 
-   if(_mycrc_!=data[length - 2])
-	 {
-	    return AGREE_MEN_ERROR;
-	 }
-   else
-   {
-		 memset(_agreement_->data,0,256);
-     _agreement_->Head = data[0];
-	   _agreement_->sID = data[1];
-	   _agreement_->oID = data[2];
-	   _agreement_->length = data[3];
-     _agreement_->index = data[4];
+  uint8_t mycrc;
+  mycrc = calculate_checksum((const uint8_t *)data,length - 2);
 
-     memcpy(_agreement_->data,data+5,data[3]);
+  if(mycrc!=data[length - 2])
+  {
+    return AGREE_MEN_ERROR;
+  }
+  else
+  {
+    memset(_agreement_->data,0,256);
+    _agreement_->Head = data[0];
+    _agreement_->sID = data[1];
+    _agreement_->oID = data[2];
+    _agreement_->length = data[3];
+    _agreement_->index = data[4];
 
-	   _agreement_->crc = data[length - 2];
-	   _agreement_->tard = data[length - 1];
-	  return AGREE_MEN_OK;
-   }
+    memcpy(_agreement_->data,data+5,data[3]);
+
+    _agreement_->crc = data[length - 2];
+    _agreement_->tard = data[length - 1];
+    return AGREE_MEN_OK;
+  }
 }
+
 
 void frame_parser_init(FrameParser *parser) {
 	  
@@ -66,7 +74,7 @@ bool frame_parser_process_byte(FrameParser *parser, uint8_t byte) {
                 parser->index = 0;
                 parser->calc_checksum = 0;
                 parser->buffer[parser->index++] = byte;
-                parser->calc_checksum += byte;  // ³õÊ¼»¯Ð£ÑéºÍ
+                parser->calc_checksum += byte;  // ï¿½ï¿½Ê¼ï¿½ï¿½Ð£ï¿½ï¿½ï¿½
             }
             break;
             
@@ -94,29 +102,29 @@ bool frame_parser_process_byte(FrameParser *parser, uint8_t byte) {
             parser->state = STATE_LENGTH;
             parser->buffer[parser->index++] = byte;
             parser->calc_checksum += byte;
-            parser->expected_length = byte;  // ³¤¶È×Ö¶Î
+            parser->expected_length = byte;  // ï¿½ï¿½ï¿½ï¿½ï¿½Ö¶ï¿½
             break;
             
         case STATE_LENGTH:
             parser->state = STATE_TYPE;
             parser->buffer[parser->index++] = byte;
             parser->calc_checksum += byte;
-            parser->frame_type = byte;  // ÀàÐÍ×Ö¶Î
+            parser->frame_type = byte;  // ï¿½ï¿½ï¿½ï¿½ï¿½Ö¶ï¿½
             
-            // ¼ì²éÊÇ·ñÓÐÊý¾Ý×Ö¶Î
+            // ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¶ï¿½
             if (parser->expected_length == 0) {
                 parser->state = STATE_CHECKSUM;
             }
             break;
             
         case STATE_TYPE:
-            // Õâ¸ö×´Ì¬Ó¦¸ÃÖ»ÔÚexpected_length>0Ê±²Å»á½øÈë
+            // ï¿½ï¿½ï¿½×´Ì¬Ó¦ï¿½ï¿½Ö»ï¿½ï¿½expected_length>0Ê±ï¿½Å»ï¿½ï¿½ï¿½ï¿½
             parser->state = STATE_DATA;
             parser->buffer[parser->index++] = byte;
             parser->calc_checksum += byte;
-            parser->data_bytes_received = 1;  // ¸ú×ÙÒÑ½ÓÊÕµÄÊý¾Ý×Ö½ÚÊý
+            parser->data_bytes_received = 1;  // ï¿½ï¿½ï¿½ï¿½ï¿½Ñ½ï¿½ï¿½Õµï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö½ï¿½ï¿½ï¿½
             
-            // ¼ì²éÊÇ·ñÒÑ¾­½ÓÊÕÍêËùÓÐÊý¾Ý
+            // ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½Ñ¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
             if (parser->data_bytes_received >= parser->expected_length) {
                 parser->state = STATE_CHECKSUM;
             }
@@ -127,7 +135,7 @@ bool frame_parser_process_byte(FrameParser *parser, uint8_t byte) {
             parser->calc_checksum += byte;
             parser->data_bytes_received++;
             
-            // ¼ì²éÊÇ·ñ½ÓÊÕÍêËùÓÐÊý¾Ý
+            // ï¿½ï¿½ï¿½ï¿½Ç·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
             if (parser->data_bytes_received >= parser->expected_length) {
                 parser->state = STATE_CHECKSUM;
             }
@@ -136,7 +144,7 @@ bool frame_parser_process_byte(FrameParser *parser, uint8_t byte) {
         case STATE_CHECKSUM:
             parser->buffer[parser->index++] = byte;
             
-            // ÑéÖ¤Ð£ÑéºÍ
+            // ï¿½ï¿½Ö¤Ð£ï¿½ï¿½ï¿½
             if (byte == (parser->calc_checksum & 0xFF)) {
                 parser->state = STATE_FOOTER;
             } else {
@@ -147,7 +155,7 @@ bool frame_parser_process_byte(FrameParser *parser, uint8_t byte) {
         case STATE_FOOTER:
             parser->buffer[parser->index++] = byte;
             if (byte == FRAME_FOOTER) {
-                // ÍêÕûÖ¡½ÓÊÕ³É¹¦
+                // ï¿½ï¿½ï¿½ï¿½Ö¡ï¿½ï¿½ï¿½Õ³É¹ï¿½
                 parser->frame_valid = true;
                 return true;
             } else {
@@ -160,7 +168,7 @@ bool frame_parser_process_byte(FrameParser *parser, uint8_t byte) {
             break;
     }
     
-    // ¼ì²é»º³åÇøÒç³ö
+    // ï¿½ï¿½é»ºï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
     if (parser->index >= MAX_FRAME_SIZE) {
         frame_parser_init(parser);
     }

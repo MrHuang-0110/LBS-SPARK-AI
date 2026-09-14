@@ -15,6 +15,7 @@
 #define FILE_MAX_SUBT_NUM       7      
 
 static FileInfo file_list[MAX_FILES];
+static volatile bool is_file_transfer_active;
 
 char *const FILE_TYPE_TBL[FILE_MAX_TYPE_NUM][FILE_MAX_SUBT_NUM] =
 {
@@ -26,7 +27,7 @@ char *const FILE_TYPE_TBL[FILE_MAX_TYPE_NUM][FILE_MAX_SUBT_NUM] =
     {"BMP", "JPG", "JPEG", "GIF"},  
     {"AVI"},           
 };
-    
+
 
 FATFS *fs[FF_VOLUMES];  
 
@@ -603,24 +604,42 @@ FRESULT fatfs_format(const TCHAR* path)
  
 void touchOtherFile(uint8_t index, uint8_t *data, uint16_t length,void (*port_transerf_data)(void *data,uint16_t length))
 { 
-    uint8_t response[10];
+	  uint8_t response[10];
 	  static char name[16]; 
 	  static uint8_t  receive_data[256];
-	  static bool is_file = false;
 	  static FIL fsrc;
+	  bool remove_file;
 	  UINT BW;
 	  FRESULT res;
 	
     switch(index) {
         case 0xDA: { 
 					char *end;
-					long fileId = strtol((const char*)data, &end, 10);
-						if(end == (const char *)fileId){ 
+					uint16_t i;
+					long fileId;
+
+					name[0] = '\0';
+					if(data == NULL || length == 0U || length >= sizeof(name))
+					{
+						response[0] = 0x01;
+						goto _FILE_ERROR;
+					}
+					memcpy(name, data, length);
+					name[length] = '\0';
+					for(i = 0U; i < length; i++)
+					{
+						if(name[i] < 0x20 || name[i] == '/' || name[i] == '\\' || name[i] == ':')
+						{
+							response[0] = 0x01;
+							goto _FILE_ERROR;
+						}
+					}
+					fileId = strtol(name, &end, 10);
+					(void)fileId;
+					if(end == name){
 							response[0] = 0x01;
 						  goto _FILE_ERROR;
-						}					
-						memset(name,0,sizeof(name));
-						strncpy(name,(const char*)data,length);         
+						}
 					  memset((FIL*)&fsrc,0,sizeof(FIL));
 					  res = f_open(&fsrc,(char*)name,FA_WRITE|FA_CREATE_ALWAYS);
 					  if(res!=FR_OK)
@@ -628,20 +647,23 @@ void touchOtherFile(uint8_t index, uint8_t *data, uint16_t length,void (*port_tr
 						   response[0] = res;	
 							 goto _FILE_ERROR;
 						}
-						is_file = true;		
+						is_file_transfer_active = true;
             response[0] = 0x01;		
 						MultiUart_SendFrame(port_transerf_data, response, 1, 0xFD);
             break;
         }
         
-        case 0xAA:
+				case 0xAA:
 				case 0xBB:
 				case 0xBC:{
-					
-            if(!is_file) {
-                response[0] = 0xF3;  
+											if(!is_file_transfer_active) {
+								response[0] = 0xF3;
                 goto _FILE_ERROR;
             }
+							if(data == NULL && length != 0U) {
+								response[0] = 0xF4;
+								goto _FILE_ERROR;
+							}
 						res = f_write(&fsrc,(uint8_t*)data,length,&BW);
 						if(BW!=length || res!=FR_OK)
 						{ 
@@ -650,7 +672,7 @@ void touchOtherFile(uint8_t index, uint8_t *data, uint16_t length,void (*port_tr
 						}
 						if(0xBB == index || 0xBC == index)
 						{ 							 				   
-               is_file = false;
+							 is_file_transfer_active = false;
 							 f_close(&fsrc);
 							 ui_manager_add_name(name);
 							 touchFileOKCallBack();
@@ -662,7 +684,7 @@ void touchOtherFile(uint8_t index, uint8_t *data, uint16_t length,void (*port_tr
 									set_entery_short(1);								    
 							 }							
  
-						 is_file = false;	
+						 is_file_transfer_active = false;
 						}			
 		         response[0] = 0x01;		
 						 MultiUart_SendFrame(port_transerf_data, response, 1, 0xFD);
@@ -677,15 +699,24 @@ void touchOtherFile(uint8_t index, uint8_t *data, uint16_t length,void (*port_tr
 		 	 
 		return;
 		_FILE_ERROR:	   
-		  is_file = false;
+		  remove_file = is_file_transfer_active;
+		  is_file_transfer_active = false;
 		  f_close(&fsrc);
-		  f_unlink(name);
+		  if(remove_file && name[0] != '\0')
+		  {
+			  f_unlink(name);
+		  }
 			MultiUart_SendFrame(port_transerf_data, response, 1, response[0]);	
 		  touchFileErrorCallBack();	 
 			extern volatile bool usb_monitor_enabled;
 			extern volatile bool blue_monitor_enabled;
 			usb_monitor_enabled = true;
 			blue_monitor_enabled = true;
+}
+
+bool exfuns_file_transfer_active(void)
+{
+    return is_file_transfer_active;
 }
 
  

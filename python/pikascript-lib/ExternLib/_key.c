@@ -10,12 +10,12 @@ typedef struct{
 }KeyHandler;
 
 enum{
-   /*·½ÏòÖµ*/
+   /*ï¿½ï¿½ï¿½ï¿½Öµ*/
    KeyUp = 0,
    KeyDown,
    KeyLeft,
    KeyRight,
-   /*¹¦ÄÜÖµ*/
+   /*ï¿½ï¿½ï¿½ï¿½Öµ*/
    Y,
    A,
    X,
@@ -63,7 +63,10 @@ int _key_key_remote(PikaObj *self, char* keys, char* coor)
 		if(blue == NULL)
 				return 0;
 		
-		uint8_t *remote  = blue->remoteValue;
+				uint8_t remote[BLUE_REMOTE_DATA_SIZE];
+		pika_GIL_EXIT();
+		blue_read_remote(remote);
+		pika_GIL_ENTER();
 		
 		#if 0
         if (strcmp(coor, "x") == 0 || strcmp(coor, "y") == 0) {
@@ -93,13 +96,13 @@ int _key_key_remote(PikaObj *self, char* keys, char* coor)
        "up","down","left","right","Y","A","B","X","L1","R1"
     };
 
-    static int keyIndexMap[256] = {0}; // Ê¹ÓÃASCIIÖµ×÷ÎªË÷Òý
+    static int keyIndexMap[256] = {0}; // Ê¹ï¿½ï¿½ASCIIÖµï¿½ï¿½Îªï¿½ï¿½ï¿½ï¿½
     static bool mapInitialized = false;
     
     if (!mapInitialized) {
         for (int i = 0; i < 10; i++) {
             if (RemoteKeyValue[i] != NULL) {
-                // Ê¹ÓÃ¼üÃûµÄµÚÒ»¸ö×Ö·û´´½¨¼òµ¥¹þÏ£
+                // Ê¹ï¿½Ã¼ï¿½ï¿½ï¿½ï¿½Äµï¿½Ò»ï¿½ï¿½ï¿½Ö·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½òµ¥¹ï¿½Ï£
                 keyIndexMap[(uint8_t)RemoteKeyValue[i][0]] = i + 1;
             }
         }

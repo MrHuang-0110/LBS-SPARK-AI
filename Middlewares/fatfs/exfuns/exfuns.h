@@ -59,6 +59,7 @@ uint8_t *exfuns_get_src_dname(uint8_t *dpfn);
 uint8_t exfuns_file_copy(uint8_t(*fcpymsg)(uint8_t *pname, uint8_t pct, uint8_t mode), uint8_t *psrc, uint8_t *pdst, uint32_t totsize, uint32_t cpdsize, uint8_t fwmode);       /* �ļ����� */
 uint8_t exfuns_folder_copy(uint8_t(*fcpymsg)(uint8_t *pname, uint8_t pct, uint8_t mode), uint8_t *psrc, uint8_t *pdst, uint32_t *totsize, uint32_t *cpdsize, uint8_t fwmode);   /* �ļ��и��� */
 void touchOtherFile(uint8_t index, uint8_t *data, uint16_t length,void (*port_transerf_data)(void *data,uint16_t length));
+bool exfuns_file_transfer_active(void);
 FRESULT fatfs_read_file(char *path,void *data,uint32_t length);
 FRESULT fatfs_create_file(char *path,const void *data,uint32_t length);
 uint32_t get_file_length(char *path);

@@ -1,6 +1,19 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `MrHuang-0110/LBS-SPARK-AI`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five canonical labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
 
 ## What this is
 
@@ -14,13 +27,10 @@ drive motors and sensors on 4 hot-pluggable ports. UI is a small LED matrix.
   Makefile/CMake for the firmware itself — Keil project files are the source of truth for includes,
   defines, and source groups.
 - Build target: `atk_f103`. Linker output `Output/atk_f103.axf`, converted to `Output/atk_f103.bin`.
-- **`postbuild.bat`** runs after build and copies `Output/atk_f103.bin` → a sibling download-tool
-  folder (`piKaWillAi-bin-downLoad/.../app.bin`) that flashes the device. ⚠️ **Both paths in
-  `postbuild.bat` are hardcoded absolute paths** (`E:\LBS-Project\SPARK-AI-PROJECT\PikaPython-SparkAi\...`
-  and `...piKaWillAi-bin-downLoad\...`). As written they do **not** match this repo's location
-  (`e:\LBS-SPARK-AI`), so a build will silently fail to update `app.bin` and the download tool will flash
-  a stale binary. Fix the paths (or relativize them) before relying on the post-build copy, and keep them
-  in sync if the repo moves.
+- **`postbuild.bat`** runs after build and copies `Output/atk_f103.bin` →
+  `E:\LBS-FramWare\products\SPARK-AI\fwlib\app\app.bin`. Both paths are hardcoded absolute paths;
+  the current source checkout is `E:\LBS-SPARK-AI`. Keep them synchronized with the repository and
+  firmware-tool locations, otherwise the download tool may flash a stale binary.
 - **`keilkill.bat`** deletes Keil intermediate files (`.o`, `.axf`, `.map`, `.dep`, etc.) across the tree.
 - Keil project files (`.uvprojx`/`.uvoptx`/`.uvguix.*`) are binary-ish XML; edit source groups through the
   IDE, not by hand.
@@ -140,6 +150,6 @@ drivers (ADC/IIC/KEY/LED/SPI/STMFLASH/TIMER/WDG); `Drivers/STM32F1xx_HAL_Driver`
 
 ## Repository context
 
-This firmware is one component of a larger `SPARK-AI-PROJECT` workspace; `postbuild.bat` hands the
-binary to a sibling download tool, and `../CanMV/` holds a separate K230 camera project. This repo is
+This firmware is one component of a larger workspace; `postbuild.bat` hands the binary to the sibling
+`LBS-FramWare` firmware tool, and `../CanMV/` holds a separate K230 camera project. This repo is
 self-contained for firmware builds — it does not depend on those siblings at compile time.
