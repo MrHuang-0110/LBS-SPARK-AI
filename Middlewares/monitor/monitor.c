@@ -7,6 +7,7 @@
 #include "rtc.h"
 #include "touch.h"
 #include "ultrasion.h"
+#include "ir_remote.h"
 #include "color.h"
 #include "bat_manager.h"
 #include "btim.h"
@@ -40,6 +41,7 @@ void monitor_call_back(void*arg) {
 	  DEV_COLOR *color;
 	  DEV_TOUCH *touch;
 	  DEV_ULTRASION *ultrasion;
+	  DEV_IR_REMOTE *ir_remote;
  
 	  HubBase_Scan_TimeOut();
     if(returnDownLoadState()) return;
@@ -52,7 +54,8 @@ void monitor_call_back(void*arg) {
         p = json_int(p, "port", i, &remLen);
         
         if(hub_port[i].sensors != NULL) {			
-            switch(hub_port[i].LinkeDeviceID) {
+            /* 按内部类型分派：0xA3 复用线上 IR_REMOTE 与超声波 ObjectID 相同 */
+            switch(hub_port[i].sensors->type) {
                 case DEVICE_ULTRASION_ID: {
                     ultrasion = read_ultrasion((SensorBase *)hub_port[i].sensors);
                     p = json_objOpen(p, "ultrasion", &remLen);
@@ -60,6 +63,14 @@ void monitor_call_back(void*arg) {
                     p = json_str(p, "cm", temp_str, &remLen);
 									 // snprintf(temp_str, sizeof(temp_str), "%d", ultrasion->dt);
 									//	p = json_str(p, "dt", temp_str, &remLen);
+                    p = json_objClose(p, &remLen);
+                    break;
+                }
+                case SENSOR_TYPE_IR_REMOTE: {
+                    ir_remote = read_ir_remote((SensorBase *)hub_port[i].sensors);
+                    p = json_objOpen(p, "ir_remote", &remLen);
+                    /* 只上报设备回传的命令态；bat 恒为未知，按协议要求不出现在 JSON 中 */
+                    p = json_int(p, "state", ir_remote->state, &remLen);
                     p = json_objClose(p, &remLen);
                     break;
                 }

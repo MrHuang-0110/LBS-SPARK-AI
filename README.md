@@ -22,10 +22,17 @@
 | ------ | ----------- | --------- | ------ |
 | 0–3 | 颜色传感器 | `0xA2` | 光强检测、阈值校准 |
 | 0–3 | 超声波传感器 | `0xA3` | 距离测量 (cm) |
+| 0–3 | 红外收发传感器 (IR_REMOTE) | `0xA3` | 与超声波**共用** `0xA3`，由返回帧内容区分；下发 4 态颜色 |
 | 0–3 | 触摸传感器 | `0xA4` | 触碰状态检测 |
 
 - **自动识别**：插拔传感器自动检测并绑定，无需手动配置
-- **优先级规则**：每组 (端口 0/1 为组 0，端口 2/3 为组 1) 中超声波优先，同组内触摸/颜色被抑制
+- **主动握手**：每 100ms 对未绑定端口发送 `0x09 "Please Link"`（绑定后停止，超时解绑后恢复），
+  IR_REMOTE 收到后才开始上报；颜色/触摸/超声波会忽略该握手
+- **`0xA3` 复用识别**：IR_REMOTE 与超声波线端 ObjectID 同为 `0xA3`，识别层按强特征帧区分——
+  `0x09` 且 payload 为 `"Play Aplication"`（设备固件**故意拼错**，少一个 `p`）或 `0xED` + 合法 2 字节
+  `{state,bat}` 判为 IR_REMOTE，`0xED` + ASCII `"<cm>/<dt>"` 判为超声波；无法确定时保持原绑定
+- **优先级规则**：每组 (端口 0/1 为组 0，端口 2/3 为组 1) 中超声波优先，同组内触摸/颜色被抑制；
+  IR_REMOTE 只作为已连接设备显示，不参与该优先级与 Pauto 行为
 - 电机配对：组 0 → 电机 4/5，组 1 → 电机 6/7
 
 ### 📡 双通道通信（USB CDC + 蓝牙 BLE）
@@ -51,7 +58,8 @@
   "deviceList": [
     { "port": 0, "ultrasion": { "cm": "45" } },
     { "port": 1, "touch": { "state": 0 } },
-    { "port": 2, "color": { "lux": "120", "state": "1", "min": "0", "max": "255", "threadValue": "128" } }
+    { "port": 2, "color": { "lux": "120", "state": "1", "min": "0", "max": "255", "threadValue": "128" } },
+    { "port": 3, "ir_remote": { "state": 1 } }
   ],
   "flash": { "total": "1024 kb", "free": "512 kb" },
   "adc": { "bat": "85%" },
@@ -63,6 +71,8 @@
 
 - **脚本运行时**：由 btim 定时器中断驱动的 `monitor_send_usb`（10ms）/ `monitor_send_blue`（200ms）接管发送，避免主循环阻塞导致监控断流
 - **空闲时**：由主循环直接发送（蓝牙约 200ms 一包），二者互斥不重复
+- IR_REMOTE 只上报 `state`（设备回传的**命令态**，0=灭 1=红 2=绿 3=蓝）：设备协议中的 `bat` 字节恒为
+  `0xFF`（无反向链路），只用于合法性校验，**不出现在 JSON 中**；`state` 不代表接收端已收到红外信号
 - **遥控优先**：`0xC2` 主动进入遥控模式后，到 `0xC0`/`0xB9`/脚本退出前暂停蓝牙监控；未主动进入时，收到 `0xC1` 遥控帧也判定为遥控器连接，30s 内暂停蓝牙监控（USB 监控不受影响），把 BLE 带宽让给遥控
 
 ### 🔄 OTA 固件升级
@@ -127,6 +137,19 @@ _ultrasion.value(port)                  # 读取距离 (cm)，255 = 超时
 _ultrasion.cmp_value(port, judgment, value)  # 比较判断 (">", "<", "==", "!=")
 ```
 
+IR_REMOTE 与超声波共用 `0xA3`：`_os.get_port_linke(port)` 对两者都返回 `0xA3`，但超声波 API
+只读取内部类型为超声波的端口，IR_REMOTE 端口调用超声波 API 返回安全默认值（`0`）。
+
+### `_ir_remote` — 红外收发传感器 (IR_REMOTE)
+
+```python
+_ir_remote.set_color(port, state)       # 切换接收端颜色：0=灭 1=红 2=绿 3=蓝
+```
+
+- 仅允许 `port` 为 `0–3`、`state` 为 `0–3`；端口不是已识别的 IR_REMOTE 或参数非法时静默忽略（无返回值）
+- 下发帧为 `5A A3 97 01 D1 <state> <crc> A5`（CRC 依次为 `66/67/68/69`），采用短时阻塞发送
+- `set_color()` 不直接改监控状态：等设备下一帧 `0xED` 回显后才更新 JSON 中的 `state`
+
 ### `_color` — 颜色传感器
 
 ```python
@@ -180,6 +203,7 @@ _os.timer()                             # 获取运行时间
 _os.resetTimer()                        # 重置计时器
 _os.stop_exit()                         # 退出脚本
 _os.get_port_linke(port)                # 获取端口连接的设备 ID (0xA2/0xA3/0xA4/0)
+                                        # IR_REMOTE 与超声波都返回 0xA3（线端 ID 复用）
 ```
 
 ---
@@ -192,6 +216,7 @@ LBS-SPARK-AI/
 ├── application/               # 外设驱动
 │   ├── motor/                 # 电机驱动 (PWM)
 │   ├── ultrasion/             # 超声波传感器
+│   ├── ir_remote/             # 红外收发传感器 (IR_REMOTE，0xA3 复用超声波 ObjectID)
 │   ├── color/                 # 颜色传感器
 │   ├── touch/                 # 触摸传感器
 │   ├── matrix/                # LED 点阵 (TM1640) + UI 管理器 + 动画
@@ -339,7 +364,9 @@ LBS-SPARK-AI/
 - **脚本运行时监控双通道**：主循环阻塞时，btim ISR 事件驱动的 `monitor_send_usb`/`monitor_send_blue` 接管发送，确保 USB/蓝牙监控不断流
 - **BLE 非阻塞发送**：`blue_send_it()` 使用 IT 中断发送，`blue_printf()` 使用阻塞轮询（仅主循环使用）
 - **OTA 互斥**：OTA 期间关闭监控上报，避免 JSON 数据与文件数据交错
-- **传感器优先级**：超声波 > 触摸/颜色，每组只有一个传感器生效
+- **传感器优先级**：超声波 > 触摸/颜色，每组只有一个传感器生效；IR_REMOTE 不参与优先级
+- **同 ID 设备区分**：IR_REMOTE 与超声波共用线端 `0xA3`，识别层用 `0xED` payload 形态判别，
+  内部私有类型 `SENSOR_TYPE_IR_REMOTE=0x1A3` 仅用于 C 层分派，不暴露给 Python/上位机
 
 ---
 

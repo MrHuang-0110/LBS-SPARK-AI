@@ -4,7 +4,7 @@
 
 int _ultrasion_cmp_value(PikaObj *self, int port, char* judgment, pika_float value)
 { 
- DEV_ULTRASION *ultrasion = read_ultrasion((SensorBase *)getHubBase(port));
+ DEV_ULTRASION *ultrasion = read_ultrasion((SensorBase *)getHubBaseByType(port,DEVICE_ULTRASION_ID));
    if(ultrasion == NULL)
 		   return 0;
 	 
@@ -34,7 +34,7 @@ int _ultrasion_cmp_value(PikaObj *self, int port, char* judgment, pika_float val
 }
 pika_float _ultrasion_value(PikaObj *self, int port)
 { 
-   DEV_ULTRASION *ultrasion = read_ultrasion((SensorBase *)getHubBase(port));
+   DEV_ULTRASION *ultrasion = read_ultrasion((SensorBase *)getHubBaseByType(port,DEVICE_ULTRASION_ID));
 	 if(ultrasion == NULL)
 		  return 0;
 	

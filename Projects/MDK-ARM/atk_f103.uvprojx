@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F103xE,PIKA_CONFIG_ENABLE</Define>
               <Undefine></Undefine>
-              <IncludePath>..\..\Users;..\..\Drivers;..\..\Drivers\CMSIS\Device\ST\STM32F1xx\Include;..\..\Drivers\STM32F1xx_HAL_Driver\Inc;..\..\Drivers\CMSIS\Include;..\..\Middlewares\event_manager;..\..\Drivers\BSP\LED;..\..\Drivers\BSP\TIMER;..\..\Drivers\BSP\KEY;..\..\Middlewares\malloc;..\..\Middlewares\usb\STM32_USB_Device_Library\Class\CDC\Inc;..\..\Middlewares\usb\STM32_USB_Device_Library\Core\Inc;..\..\Middlewares\usb\USB_APP;..\..\Middlewares\usb\USB_HAL;..\..\Middlewares\protocol;..\..\Drivers\BSP\STMFLASH;..\..\python\pikascript-core;..\..\python\pikascript-api;..\..\python\pikascript-lib\PikaStdLib;..\..\Drivers\BSP\ADC;..\..\Drivers\BSP\IIC;..\..\Drivers\BSP\SPI;..\..\Middlewares\deviceIdentify;..\..\application\beep;..\..\application\matrix;..\..\application\motor;..\..\Drivers\BSP\WDG;..\..\application\blue;..\..\application\color;..\..\application\touch;..\..\application\ultrasion;..\..\Middlewares\fatfs\source;..\..\Middlewares\fatfs\exfuns;..\..\Middlewares\w25q80x;..\..\Middlewares\lbs_file_manager;..\..\Middlewares\monitor;..\..\Middlewares\bat_manager;..\..\Middlewares\RTC</IncludePath>
+              <IncludePath>..\..\Users;..\..\Drivers;..\..\Drivers\CMSIS\Device\ST\STM32F1xx\Include;..\..\Drivers\STM32F1xx_HAL_Driver\Inc;..\..\Drivers\CMSIS\Include;..\..\Middlewares\event_manager;..\..\Drivers\BSP\LED;..\..\Drivers\BSP\TIMER;..\..\Drivers\BSP\KEY;..\..\Middlewares\malloc;..\..\Middlewares\usb\STM32_USB_Device_Library\Class\CDC\Inc;..\..\Middlewares\usb\STM32_USB_Device_Library\Core\Inc;..\..\Middlewares\usb\USB_APP;..\..\Middlewares\usb\USB_HAL;..\..\Middlewares\protocol;..\..\Drivers\BSP\STMFLASH;..\..\python\pikascript-core;..\..\python\pikascript-api;..\..\python\pikascript-lib\PikaStdLib;..\..\Drivers\BSP\ADC;..\..\Drivers\BSP\IIC;..\..\Drivers\BSP\SPI;..\..\Middlewares\deviceIdentify;..\..\application\beep;..\..\application\matrix;..\..\application\motor;..\..\Drivers\BSP\WDG;..\..\application\blue;..\..\application\color;..\..\application\touch;..\..\application\ultrasion;..\..\application\ir_remote;..\..\Middlewares\fatfs\source;..\..\Middlewares\fatfs\exfuns;..\..\Middlewares\w25q80x;..\..\Middlewares\lbs_file_manager;..\..\Middlewares\monitor;..\..\Middlewares\bat_manager;..\..\Middlewares\RTC</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -423,6 +423,11 @@
               <FileName>ultrasion.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\application\ultrasion\ultrasion.c</FilePath>
+            </File>
+            <File>
+              <FileName>ir_remote.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\application\ir_remote\ir_remote.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -998,6 +1003,11 @@
               <FileName>_beep.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\python\pikascript-lib\ExternLib\_beep.c</FilePath>
+            </File>
+            <File>
+              <FileName>_ir_remote.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\python\pikascript-lib\ExternLib\_ir_remote.c</FilePath>
             </File>
           </Files>
         </Group>

@@ -8,3 +8,4 @@ import _touch
 import _matrix
 import _random
 import _beep
+import _ir_remote

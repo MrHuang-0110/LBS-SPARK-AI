@@ -6,7 +6,7 @@
 
 pika_float _color_cmp_lux(PikaObj *self, int port, char* judgment, pika_float value)
 { 
-  DEV_COLOR *color = read_color((SensorBase *)getHubBase(port));
+  DEV_COLOR *color = read_color((SensorBase *)getHubBaseByType(port,DEVICE_COLOR_ID));
 	
 	if(color == NULL)
 		  return 0;
@@ -33,7 +33,7 @@ pika_float _color_cmp_lux(PikaObj *self, int port, char* judgment, pika_float va
 
 pika_float _color_lux(PikaObj *self, int port)
 { 
-  DEV_COLOR *color = read_color((SensorBase *)getHubBase(port));
+  DEV_COLOR *color = read_color((SensorBase *)getHubBaseByType(port,DEVICE_COLOR_ID));
 	
 	if(color == NULL)
 		  return 0;
@@ -43,7 +43,7 @@ pika_float _color_lux(PikaObj *self, int port)
 
 pika_float _color_lux_state(PikaObj *self, int port)
 { 
-  DEV_COLOR *color = read_color((SensorBase *)getHubBase(port));
+  DEV_COLOR *color = read_color((SensorBase *)getHubBaseByType(port,DEVICE_COLOR_ID));
 	
 	if(color == NULL)
 		  return 0;
@@ -53,7 +53,7 @@ pika_float _color_lux_state(PikaObj *self, int port)
 
 void _color_one_calibrate(PikaObj *self, int port, int timers)
 {
-  DEV_COLOR *color = read_color((SensorBase *)getHubBase(port));
+  DEV_COLOR *color = read_color((SensorBase *)getHubBaseByType(port,DEVICE_COLOR_ID));
 	
 	if(color == NULL)
 		  return;
@@ -77,8 +77,8 @@ void _color_one_calibrate(PikaObj *self, int port, int timers)
 
 void _color_two_calibrate(PikaObj *self, int port1, int port2, int timers)
 { 
-   DEV_COLOR *color1 = read_color((SensorBase *)getHubBase(port1));
-	 DEV_COLOR *color2 = read_color((SensorBase *)getHubBase(port2));
+   DEV_COLOR *color1 = read_color((SensorBase *)getHubBaseByType(port1,DEVICE_COLOR_ID));
+	 DEV_COLOR *color2 = read_color((SensorBase *)getHubBaseByType(port2,DEVICE_COLOR_ID));
 	
 	if(color1 == NULL || color2 == NULL)
 		  return;
@@ -104,7 +104,7 @@ void _color_two_calibrate(PikaObj *self, int port1, int port2, int timers)
 
 void _color_set_color_threshold_value(PikaObj *self, int port, int value)
 { 
-  DEV_COLOR *color = read_color((SensorBase *)getHubBase(port));
+  DEV_COLOR *color = read_color((SensorBase *)getHubBaseByType(port,DEVICE_COLOR_ID));
 	if(color == NULL)
 		  return;   
 	

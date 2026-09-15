@@ -2,6 +2,7 @@
 #include "motor.h"
 #include "touch.h"
 #include "ultrasion.h"
+#include "ir_remote.h"
 #include "color.h"
 #include "blue.h"
 #include "exfuns.h"
@@ -38,6 +39,9 @@ static EVENT_MANAGER event_t[] = {
  {"iwdg_feedevent",10,iwdg_feed,NULL},
  {"usb_connect",10,usb_event_connect_callback,NULL},
  {"scan_adc",100,sample_adc_data_callback,NULL},
+ /* 100ms 传感器握手扫描：对未绑定端口重复发送 0x09 "Please Link"，
+    绑定后自动停止，解绑后恢复（见 ir_remote.c）。 */
+ {"sensor_link_event",100,ir_remote_handshake_scan,NULL},
  {"usb_receive",0, usb_event_receive_callback,(USB_MESSAGE_BOX*)&usb_message},
  {"beep",1, beep_update,NULL},
  {"matrix_event",10, matrix_callback,NULL},
@@ -182,7 +186,10 @@ void pauto_play(void)
         // 4.2 确定每组中启用的超声波端口（端口号小的优先）
         int ultra_in_group[2] = {-1, -1};   // 组0:端口0/1, 组1:端口2/3
         for (int port = 0; port < 4; port++) {
-            if (new_conn[port] == 0xA3) {
+            /* 0xA3 复用：IR_REMOTE 也返回 0xA3，必须用内部类型排除，
+               否则 IR 会被当成超声波参与避障/跟随 */
+            if (new_conn[port] == 0xA3 &&
+                get_port_sensor_type(port) == DEVICE_ULTRASION_ID) {
                 int group = (port == 0 || port == 1) ? 0 : 1;
                 if (ultra_in_group[group] == -1) {
                     ultra_in_group[group] = port;
@@ -193,6 +200,7 @@ void pauto_play(void)
         // 4.3 更新允许标志
         int new_touch[4] = {0};
         int new_color[4] = {0};
+        int new_ir[4] = {0};
         int new_ultra_port = -1;
         int new_ultra_group = -1;
 
@@ -208,8 +216,11 @@ void pauto_play(void)
                 if (ultra_in_group[group] == -1 || ultra_in_group[group] == port) {
                     new_color[port] = 1;
                 }
-            } else if (conn == 0xA3) { // 超声波
-                if (ultra_in_group[group] == port) {
+            } else if (conn == 0xA3) {
+                if (get_port_sensor_type(port) == SENSOR_TYPE_IR_REMOTE) {
+                    /* IR_REMOTE：只作为已连接设备显示，不参与超声波优先级与行为 */
+                    new_ir[port] = 1;
+                } else if (ultra_in_group[group] == port) { // 超声波
                     new_ultra_port = port;
                     new_ultra_group = group;
                 }
@@ -224,7 +235,8 @@ void pauto_play(void)
             } else {
                 int allowed = (conn == 0xA4 && new_touch[port]) ||
                               (conn == 0xA2 && new_color[port]) ||
-                              (conn == 0xA3 && new_ultra_port == port);
+                              (conn == 0xA3 && new_ultra_port == port) ||
+                              (conn == 0xA3 && new_ir[port]);
                 if (allowed) {
                     _matrix_set_pixel_brightness(NULL, port * 2, 0, 1);
                 } else {

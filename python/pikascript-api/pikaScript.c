@@ -37,6 +37,7 @@ PikaObj *pikaPythonInit(void){
             "import _matrix\n"
             "import _random\n"
             "import _beep\n"
+            "import _ir_remote\n"
             "\n");
 #else 
     obj_runModule((PikaObj*)pikaMain, "main");

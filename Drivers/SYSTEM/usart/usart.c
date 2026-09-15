@@ -827,11 +827,8 @@ static void HAL_USART_IDLE_INTERRUPT(UART_HandleTypeDef *huart)
 					HAL_UART_DMAStop(huart);					 
 				   if(dataAgreeAnalys(&frame,usart1dmaRxBufer,(DMA_RX_BUFER_SIZE - __HAL_DMA_GET_COUNTER(huart->hdmarx))))
 					 { 
-						  SensorBase *base = HubBase_And_identify(0,frame.sID);
-						  if(base!=NULL)
-							{ 
-							  set_sensor_parameter(base,(_AGREEMENT *)&frame);
-							}
+					  /* 0xA3 复用（超声波/IR_REMOTE）：在识别层按帧内容细分并绑定 */
+					  HubBase_Frame_Process(0,&frame);
 					 }
 					 else
 					 { 
@@ -847,11 +844,8 @@ static void HAL_USART_IDLE_INTERRUPT(UART_HandleTypeDef *huart)
 					HAL_UART_DMAStop(huart);	
 				   if(dataAgreeAnalys(&frame,usart2dmaRxBufer,(DMA_RX_BUFER_SIZE - __HAL_DMA_GET_COUNTER(huart->hdmarx))))
 					 { 
-						  SensorBase *base = HubBase_And_identify(1,frame.sID);
-						  if(base!=NULL)
-							{ 
-							  set_sensor_parameter(base,(_AGREEMENT *)&frame);
-							}
+					  /* 0xA3 复用（超声波/IR_REMOTE）：在识别层按帧内容细分并绑定 */
+					  HubBase_Frame_Process(1,&frame);
 					 }
 					 else
 					 { 
@@ -866,11 +860,8 @@ static void HAL_USART_IDLE_INTERRUPT(UART_HandleTypeDef *huart)
 					HAL_UART_DMAStop(huart);	
 				   if(dataAgreeAnalys(&frame,usart3dmaRxBufer,(DMA_RX_BUFER_SIZE - __HAL_DMA_GET_COUNTER(huart->hdmarx))))
 					 { 
-						  SensorBase *base = HubBase_And_identify(2,frame.sID);
-						  if(base!=NULL)
-							{ 
-							  set_sensor_parameter(base,(_AGREEMENT *)&frame);
-							}
+					  /* 0xA3 复用（超声波/IR_REMOTE）：在识别层按帧内容细分并绑定 */
+					  HubBase_Frame_Process(2,&frame);
 					 }
 					 else
 					 { 
@@ -885,11 +876,8 @@ static void HAL_USART_IDLE_INTERRUPT(UART_HandleTypeDef *huart)
 					HAL_UART_DMAStop(huart);	
 				   if(dataAgreeAnalys(&frame,usart4dmaRxBufer,(DMA_RX_BUFER_SIZE - __HAL_DMA_GET_COUNTER(huart->hdmarx))))
 					 { 
-						  SensorBase *base = HubBase_And_identify(3,frame.sID);
-						  if(base!=NULL)
-							{ 
-							  set_sensor_parameter(base,(_AGREEMENT *)&frame);
-							}
+					  /* 0xA3 复用（超声波/IR_REMOTE）：在识别层按帧内容细分并绑定 */
+					  HubBase_Frame_Process(3,&frame);
 					 }
 					 else
 					 { 

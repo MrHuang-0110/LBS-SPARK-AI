@@ -22,6 +22,7 @@
 #include "PikaStdLib.h"
 #include "_beep.h"
 #include "_color.h"
+#include "_ir_remote.h"
 #include "_key.h"
 #include "_math.h"
 #include "_matrix.h"
@@ -224,6 +225,9 @@ PikaObj *New_PikaMain(Args *args){
 #endif
 #ifndef PIKA_MODULE__COLOR_DISABLE
     obj_newObj(self, "_color", "_color", New__color);
+#endif
+#ifndef PIKA_MODULE__IR_REMOTE_DISABLE
+    obj_newObj(self, "_ir_remote", "_ir_remote", New__ir_remote);
 #endif
 #ifndef PIKA_MODULE__KEY_DISABLE
     obj_newObj(self, "_key", "_key", New__key);
@@ -1703,6 +1707,30 @@ class_inhert(_color, TinyObj);
 PikaObj *New__color(Args *args){
     PikaObj *self = New_TinyObj(args);
     obj_setClass(self, _color);
+    return self;
+}
+#endif
+
+#ifndef PIKA_MODULE__IR_REMOTE_DISABLE
+void _ir_remote_set_colorMethod(PikaObj *self, Args *_args_){
+    int port = args_getInt(_args_, "port");
+    int state = args_getInt(_args_, "state");
+    _ir_remote_set_color(self, port, state);
+}
+method_typedef(
+    _ir_remote_set_color,
+    "set_color", "port,state"
+);
+
+class_def(_ir_remote){
+    __BEFORE_MOETHOD_DEF
+    method_def(_ir_remote_set_color, 1110972463),
+};
+class_inhert(_ir_remote, TinyObj);
+
+PikaObj *New__ir_remote(Args *args){
+    PikaObj *self = New_TinyObj(args);
+    obj_setClass(self, _ir_remote);
     return self;
 }
 #endif
